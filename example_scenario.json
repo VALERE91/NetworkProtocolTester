@@ -1,0 +1,27 @@
+{
+    "protocols": ["udp", "tcp", "quic", "enet"],
+    "padding": 1024,
+    "test_duration": 10,
+    "reliable_freq": 10,
+    "unreliable_freq": 100,
+    "client": {
+        "host": "127.0.0.1",
+        "private_key": "path to SSH private key"
+    },
+    "servers": [
+        { 
+            "name": "local_vm",
+            "host": "127.0.0.1",
+            "private_key": "path to SSH private key",
+            "emulations": [
+                {"name": "good", "latency": 100, "drop": 1},
+                {"name": "bad", "latency": 200, "drop": 10}
+            ]
+        },
+        { 
+            "name": "remote_servers",
+            "host": "127.0.0.1",
+            "private_key": "path to SSH private key"
+        }
+    ]
+}
