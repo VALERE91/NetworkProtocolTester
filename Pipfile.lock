@@ -1,0 +1,24 @@
+{
+    "_meta": {
+        "hash": {
+            "sha256": "885787f82f6f4be0fa1f6c3909d4488b4f2707caa5b0b6fe8cac9462253c3500"
+        },
+        "pipfile-spec": 6,
+        "requires": {
+            "python_full_version": "3.13.7",
+            "python_version": "3.13"
+        },
+        "sources": [
+            {
+                "name": "pypi",
+                "url": "https://pypi.org/simple",
+                "verify_ssl": true
+            }
+        ]
+    },
+    "default": {
+        "paramiko": "*",
+        "scp": "*"
+    },
+    "develop": {}
+}
