@@ -16,10 +16,10 @@
             "username": "valere",
             "private_key": "~/.ssh/id_rsa",
             "emulations": [
-                {"name": "default", "latency": 0, "drop": 0},
-                {"name": "good", "latency": 50, "drop": 1},
-                {"name": "medium", "latency": 100, "drop": 2},
-                {"name": "bad", "latency": 200, "drop": 5}
+                {"name": "default", "interface": "enp0s5", "latency": 0, "drop": 0},
+                {"name": "good", "interface": "enp0s5", "latency": 50, "drop": 1},
+                {"name": "medium", "interface": "enp0s5", "latency": 100, "drop": 2},
+                {"name": "bad", "interface": "enp0s5", "latency": 200, "drop": 5}
             ]
         }
     ]

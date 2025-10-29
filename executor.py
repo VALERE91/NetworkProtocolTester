@@ -38,7 +38,7 @@ def prepare_host(host_info):
             # Install Git, Rust and iproute2
             commands = [
                 "sudo -S apt-get update",
-                "sudo -S apt-get install -y git iproute2",
+                "sudo -S apt-get install -y git iproute2 build-essential curl",
                 "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
             ]
 
@@ -59,7 +59,7 @@ def prepare_host(host_info):
             # For simplicity, we're assuming the current working directory is the git repo.
             # We will copy the project over instead of cloning.
             remote_path = "/tmp/network_protocol_tester"
-            git_url = ""
+            git_url = "https://github.com/VALERE91/NetworkProtocolTester.git"
 
             print(f"Creating remote directory {remote_path} on {host}")
             ssh.exec_command(f"mkdir -p {remote_path}")
@@ -111,7 +111,7 @@ def run_test(scenario, results_dir):
         for server_info in scenario['servers']:
             server_name = server_info['name']
             emulations = server_info.get('emulations', [{'name': 'default'}])
-
+            password = getpass.getpass(f"Enter password for {server_info.get('username', 'root')}@{server_info['host']}: ")
             for emulation in emulations:
                 emulation_name = emulation['name']
                 print(f"Testing protocol: {protocol} on server: {server_name} with emulation: {emulation_name}")
@@ -130,14 +130,18 @@ def run_test(scenario, results_dir):
                     # Apply network emulation
                     latency = emulation.get('latency')
                     drop = emulation.get('drop')
-                    interface = "eth0"  # Assuming eth0, this might need to be configurable
+                    interface = emulation.get('interface', 'eth0')  # Default to eth0 if not specified
                     if latency is not None and drop is not None:
                         print(f"Applying network emulation on {server_info['host']}: {latency}ms latency, {drop}% drop")
                         # It's good practice to delete any existing qdisc before adding a new one.
-                        server_ssh.exec_command(f"tc qdisc del dev {interface} root")
+                        stdin, stdout, stderr = server_ssh.exec_command(f"sudo -S tc qdisc del dev {interface} root")
+                        stdin.write(password + '\n')
+                        stdin.flush()
                         time.sleep(0.5)
-                        tc_command = f"tc qdisc add dev {interface} root netem latency {latency}ms loss {drop}%"
+                        tc_command = f"sudo -S tc qdisc add dev {interface} root netem latency {latency}ms loss {drop}%"
                         stdin, stdout, stderr = server_ssh.exec_command(tc_command)
+                        stdin.write(password + '\n')
+                        stdin.flush()
                         exit_status = stdout.channel.recv_exit_status()
                         if exit_status != 0:
                             print(f"Error applying netem settings: {stderr.read().decode()}")

@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::time::Duration;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -173,6 +174,10 @@ async fn main() -> anyhow::Result<()> {
             results.finalize();
 
             if let Some(json_path) = json {
+                if !json_path.exists() {
+                    File::create(json_path.clone())?;    
+                }
+                
                 if json_path.exists() {
                     info!("Writing results to file: {:?}", json_path);
                     let json_results = serde_json::to_string_pretty(&results)?;
