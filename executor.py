@@ -1,3 +1,4 @@
+import getpass
 import json
 import argparse
 import os
@@ -34,15 +35,21 @@ def prepare_host(host_info):
             ssh.connect(host, username=username, key_filename=os.path.expanduser(private_key_path))
 
             print(f"Installing dependencies on {host}...")
-            # Install Git and Rust
+            # Install Git, Rust and iproute2
             commands = [
-                "apt-get update",
-                "apt-get install -y git",
+                "sudo -S apt-get update",
+                "sudo -S apt-get install -y git iproute2",
                 "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
             ]
+
+            print("I need root privileges...")
+            password = getpass.getpass(f"Enter password for {username}@{host}: ")
+
             for command in commands:
                 print(f"Executing: {command}")
                 stdin, stdout, stderr = ssh.exec_command(command)
+                stdin.write(password + '\n')
+                stdin.flush()
                 exit_status = stdout.channel.recv_exit_status()
                 if exit_status != 0:
                     print(f"Error executing command: {command}")
@@ -51,15 +58,19 @@ def prepare_host(host_info):
 
             # For simplicity, we're assuming the current working directory is the git repo.
             # We will copy the project over instead of cloning.
-            project_root = os.getcwd()
             remote_path = "/tmp/network_protocol_tester"
+            git_url = ""
 
             print(f"Creating remote directory {remote_path} on {host}")
             ssh.exec_command(f"mkdir -p {remote_path}")
 
-            print(f"Copying project files to {host}:{remote_path}...")
-            with SCPClient(ssh.get_transport()) as scp:
-                scp.put(project_root, recursive=True, remote_path=remote_path)
+            print(f"Git cloning into {host}:{remote_path}...")
+            stdin, stdout, stderr = ssh.exec_command(f"git clone {git_url} {remote_path}")
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                print(f"Error executing command: {command}")
+                print(stderr.read().decode())
+                return
 
             print(f"Building project on {host}...")
             build_command = f"cd {remote_path} && $HOME/.cargo/bin/cargo build --release"
@@ -116,6 +127,22 @@ def run_test(scenario, results_dir):
                     server_ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     server_ssh.connect(server_info['host'], username=server_info.get('username', 'root'), key_filename=server_info['private_key'])
 
+                    # Apply network emulation
+                    latency = emulation.get('latency')
+                    drop = emulation.get('drop')
+                    interface = "eth0"  # Assuming eth0, this might need to be configurable
+                    if latency is not None and drop is not None:
+                        print(f"Applying network emulation on {server_info['host']}: {latency}ms latency, {drop}% drop")
+                        # It's good practice to delete any existing qdisc before adding a new one.
+                        server_ssh.exec_command(f"tc qdisc del dev {interface} root")
+                        time.sleep(0.5)
+                        tc_command = f"tc qdisc add dev {interface} root netem latency {latency}ms loss {drop}%"
+                        stdin, stdout, stderr = server_ssh.exec_command(tc_command)
+                        exit_status = stdout.channel.recv_exit_status()
+                        if exit_status != 0:
+                            print(f"Error applying netem settings: {stderr.read().decode()}")
+                            # Continue without emulation if it fails
+
                     # Connect to client
                     client_info = scenario['client']
                     client_ssh = paramiko.SSHClient()
@@ -167,6 +194,11 @@ def run_test(scenario, results_dir):
                 finally:
                     # Clean up the server process and close connections
                     if server_ssh:
+                        # Clean up network emulation
+                        if 'latency' in emulation and 'drop' in emulation:
+                            print(f"Cleaning up network emulation on {server_info['host']}")
+                            server_ssh.exec_command(f"tc qdisc del dev {interface} root")
+
                         print(f"Terminating server on {server_info['host']}...")
                         # Using pkill is a simple way to ensure the process is stopped.
                         server_ssh.exec_command("pkill -f network_protocol_tester")
