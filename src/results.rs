@@ -65,16 +65,25 @@ impl TestResult {
             info!("No packets received.");
         } else {
             let latencies: Vec<u64> = self.packets.iter().map(|p| p.latency).collect();
-            let avg = latencies.iter().sum::<u64>() / latencies.len() as u64;
+            self.average_latency = latencies.iter().sum::<u64>() / latencies.len() as u64;
+            self.min_latency = match latencies.iter().min(){
+                Some(min) => min.clone(),
+                None => 0
+            };
+            self.max_latency = match latencies.iter().max(){
+                Some(max) => max.clone(),
+                None => 0
+            };
+            self.packets_received = self.packets.len() as u64;
+            self.packets_lost = (self.reliable_packets_sent + self.unreliable_packets_sent) - self.packets_received;
+
             info!("Received {} packets", self.packets.len());
-            info!("Average latency: {}us", avg);
-            info!("Min latency: {}us", latencies.iter().min().unwrap());
-            info!("Max latency: {}us", latencies.iter().max().unwrap());
+            info!("Average latency: {}us", self.average_latency);
+            info!("Min latency: {}us", self.min_latency);
+            info!("Max latency: {}us", self.max_latency);
             info!("Reliable packets sent: {}", self.reliable_packets_sent);
             info!("Unreliable packets sent: {}", self.unreliable_packets_sent);
-            self.packets_received = self.packets.len() as u64;
             info!("Packets received: {}", self.packets_received);
-            self.packets_lost = self.packets_received - self.reliable_packets_sent - self.unreliable_packets_sent;
             info!("Packets lost: {}", self.packets_lost);
         }
     }
