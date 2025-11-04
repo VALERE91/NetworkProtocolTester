@@ -138,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
                         if let Ok(message) = message {
                             results.add_packet(&message);
                         }else{
-                            info!("Failed to receive message");
+                            error!("Failed to receive message");
                             break;
                         }
                     }
@@ -161,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
                         if let Ok(message) = message {
                             results.add_packet(&message);
                         }else{
-                            info!("Failed to receive message");
+                            error!("Failed to receive message");
                             break;
                         }
                     }
