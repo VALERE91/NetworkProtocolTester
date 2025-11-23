@@ -10,7 +10,7 @@ from . import emulation
 from . import results
 
 REMOTE_WORK_DIR = "/tmp/network_protocol_tester"
-REMOTE_BIN = f"{REMOTE_WORK_DIR}/target/release/network_protocol_tester"
+REMOTE_BIN = f"{REMOTE_WORK_DIR}/network_protocol_tester"
 REPO_OWNER = "VALERE91"
 REPO_NAME = "NetworkProtocolTester"
 GIT_URL = "https://github.com/VALERE91/NetworkProtocolTester.git"
@@ -44,6 +44,8 @@ def resolve_binary_url(ssh, version):
     if "linux" in os_name:
         if arch == "x86_64":
             suffix = "linux-x86_64"
+        elif arch == "aarch64":
+            suffix = "linux-arm64"
         else:
             raise Exception(f"Unsupported Linux architecture: {arch}. Release only has x86_64.")
     elif "darwin" in os_name: # macOS
@@ -71,36 +73,42 @@ def prepare_host(host_info, sudo_password, version):
 
     try:
         with get_ssh_connection(host_info) as ssh:
-            # 1. Determine Download URL
+            # Determine Download URL
             download_url = resolve_binary_url(ssh, version)
             print(f" -> Detected platform. Downloading from: {download_url}")
 
-            # 2. Install Runtime Dependencies (curl + iproute2 for tc)
-            # Check if apt-get exists (Linux) to install dependencies
+            # Install Runtime Dependencies (curl + iproute2 for tc)
             stdin, stdout, stderr = ssh.exec_command("which apt-get")
             if stdout.channel.recv_exit_status() == 0:
                 print(f" -> Installing dependencies on {host}...")
-                cmd = "sudo -S apt-get update && sudo -S apt-get install -y iproute2 curl"
+
+                # - DEBIAN_FRONTEND=noninteractive: Stops 'Are you sure?' prompts
+                # - -qq: Quiet mode (reduces text)
+                # - > /dev/null: Discards stdout to prevent Paramiko buffer overflow
+                cmd = "sudo -S DEBIAN_FRONTEND=noninteractive apt-get update -qq > /dev/null && " \
+                      "sudo -S DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 curl > /dev/null"
+
                 stdin, stdout, stderr = ssh.exec_command(cmd)
                 stdin.write(sudo_password + '\n')
                 stdin.flush()
+
                 if stdout.channel.recv_exit_status() != 0:
+                    # We can safely read stderr now because the process has exited
                     print(f"[!] Warning: Dep install failed: {stderr.read().decode()}")
 
-            # 3. Setup Directory
+            # Setup Directory
             ssh.exec_command(f"mkdir -p {REMOTE_WORK_DIR}")
 
-            # 4. Download Binary
-            # -L follows redirects, -o saves to specific path
-            download_cmd = f"curl -L -o {REMOTE_BIN} {download_url}"
+            # Download Binary
+            download_cmd = f"curl -s -L -o {REMOTE_BIN} {download_url}"
             stdin, stdout, stderr = ssh.exec_command(download_cmd)
+
             if stdout.channel.recv_exit_status() != 0:
                 error = stderr.read().decode()
-                if "404" in error or "404" in stdout.read().decode():
-                    raise Exception(f"Release binary not found on GitHub. Check version {version} and URL.")
+                if "404" in error:
+                    raise Exception(f"Release binary not found. Check version {version}.")
                 raise Exception(f"Download failed: {error}")
 
-            # 5. Make Executable
             ssh.exec_command(f"chmod +x {REMOTE_BIN}")
             print(f"[*] Host {host} ready.")
 
@@ -119,7 +127,6 @@ def execute_test_cycle(scenario_data, results_dir):
     if not version:
         raise ValueError("Scenario file is missing 'release_version' field (e.g. 'v1.0.1')")
 
-    # Simple password strategy: Ask once per unique user/host combo
     for host in all_hosts:
         key = f"{host.get('username', 'root')}@{host['host']}"
         if key not in passwords:

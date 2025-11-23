@@ -3,7 +3,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use rustls::crypto;
-use tokio::time::Instant;
+use tokio::time::{sleep, Instant};
 use tracing::{error, info};
 use crate::protocols::{start_client, start_server, ClientConfig, ProtocolMessage, ServerConfig};
 use crate::results::TestResult;
@@ -145,24 +145,32 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            info!("Test duration of {}s finished. Waiting 10s for in-flight packets.", test_duration);
+            info!("Test duration of {}s finished. Waiting {}s for in-flight packets.", test_duration, test_duration);
 
             let pb = ProgressBar::new(steps);
             let pb_style = ProgressStyle::default_bar().template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] ({eta})")?;
             pb.set_style(pb_style);
 
-            let end_time = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < end_time {
+            let mut test_timer = Box::pin(sleep(Duration::from_secs(test_duration)));
+
+            loop {
                 tokio::select! {
+                    _ = &mut test_timer => {
+                        info!("Test duration reached.");
+                        break;
+                    }
                     _ = progress_interval.tick() => {
                         pb.inc(1);
-                    },
+                    }
                     message = client.receive() => {
-                        if let Ok(message) = message {
-                            results.add_packet(&message);
-                        }else{
-                            error!("Failed to receive message");
-                            break;
+                        match message {
+                            Ok(msg) => {
+                                results.add_packet(&msg);
+                            },
+                            Err(e) => {
+                                error!("Failed to receive message: {}", e);
+                                break;
+                            }
                         }
                     }
                 }
