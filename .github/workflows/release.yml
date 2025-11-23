@@ -6,6 +6,9 @@ on:
       - "v*" # Trigger on tags like v1.0.0, v0.1.0-alpha, etc.
   workflow_dispatch: # Allows manual triggering from the Actions tab
 
+permissions:
+  contents: write # REQUIRED to create releases
+
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: network_protocol_tester
@@ -67,3 +70,24 @@ jobs:
           name: binary-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
+  create-release:
+    name: Create Release
+    needs: build # Wait for all builds to finish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          merge-multiple: true # Flattens the file structure
+
+      - name: List Files (Debug)
+        run: ls -R all-artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: all-artifacts/*
+          generate_release_notes: true # Auto-generates changelog
+          draft: false
+          prerelease: false
