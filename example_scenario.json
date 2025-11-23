@@ -1,5 +1,5 @@
 {
-    "release_version": "v1.0.4",
+    "release_version": "v1.0.5",
     "protocols": ["udp", "tcp", "quic", "enet"],
     "padding": 1024,
     "test_duration": 10,
