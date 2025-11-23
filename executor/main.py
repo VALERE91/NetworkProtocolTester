@@ -5,7 +5,7 @@ import time
 import paramiko
 
 # Local module imports
-from . import scenario
+from . import scenario, cloud
 from . import emulation
 from . import results
 
@@ -116,90 +116,135 @@ def prepare_host(host_info, sudo_password, version):
         print(f"[!] Failed to prepare host {host}: {e}")
         raise e
 
-def execute_test_cycle(scenario_data, results_dir):
-    """Main execution loop."""
+def execute_test_cycle(scen_data, results_dir):
+    """Main execution loop with Cloud Integration."""
 
-    # Provision all hosts
-    all_hosts = scenario_data['servers'] + [scenario_data['client']]
-    passwords = {} # Cache passwords per user/host if needed, or ask once.
+    # Combined list of all machines involved
+    all_hosts = scen_data['servers'] + [scen_data['client']]
+
     version = scen_data.get('release_version')
-
     if not version:
         raise ValueError("Scenario file is missing 'release_version' field (e.g. 'v1.0.1')")
 
-    for host in all_hosts:
-        key = f"{host.get('username', 'root')}@{host['host']}"
-        if key not in passwords:
-            passwords[key] = getpass.getpass(f"Enter sudo password for {key}: ")
-        prepare_host(host, passwords[key], version)
+    passwords = {}
+    provisioners = [] # Keep track of cloud resources to destroy them later
 
-    client_cfg = scen_data['client']
+    try:
+        # --- PHASE 1: PROVISIONING & PREPARATION ---
+        print("\n=== Phase 1: Provisioning & Preparation ===")
 
-    # Run Tests
-    for protocol in scenario_data['protocols']:
-        print(f"\n=== Starting Protocol Series: {protocol} ===")
-        local_proto_dir = results.prepare_directories(results_dir, protocol)
+        for host in all_hosts:
+            # A. Cloud Provisioning
+            if host.get('type') == 'cloud':
+                print(f"[*] Provisioning Cloud Node: {host['name']} in {host['location']}...")
 
-        for server_cfg in scenario_data['servers']:
-            srv_pass = passwords[f"{server_cfg.get('username', 'root')}@{server_cfg['host']}"]
+                # 1. Instantiate the provisioner
+                prov = cloud.CloudProvisioner(host['location'])
+                provisioners.append(prov) # Store for teardown
 
-            for emu in server_cfg.get('emulations', [{'name': 'default'}]):
-                print(f"\n--- Test: {server_cfg['name']} | Mode: {emu['name']} ---")
+                # 2. Launch VM (blocks until SSH is ready)
+                # We update the 'host' dict with the new IP, username, and key path
+                cloud_info = prov.provision(instance_type=host.get('vm_type', 't3.micro'))
+                host.update(cloud_info)
 
-                server_ssh = None
-                client_ssh = None
+                # AWS Ubuntu images use keys, sudo is passwordless
+                passwords[f"{host['username']}@{host['host']}"] = ""
 
-                try:
-                    server_ssh = get_ssh_connection(server_cfg)
-                    client_ssh = get_ssh_connection(client_cfg)
-                    interface = emu.get('interface', 'eth0')
+            # B. Physical/Local Hosts
+            else:
+                key = f"{host.get('username', 'root')}@{host['host']}"
+                if key not in passwords:
+                    # Only ask if we haven't asked this user@host before
+                    passwords[key] = getpass.getpass(f"Enter sudo password for {key}: ")
 
-                    # Network Emulation
-                    emulation.clean_emulation(server_ssh, interface, srv_pass)
-                    emulation.apply_emulation(server_ssh, interface, emu.get('latency'), emu.get('drop'), srv_pass)
+            # C. Software Installation (Prepare Host)
+            # This works for both Cloud (now active) and Physical hosts
+            pwd = passwords.get(f"{host.get('username', 'root')}@{host['host']}", "")
+            prepare_host(host, pwd, version)
 
-                    # Start Server
-                    port = 12345
-                    print(f"[*] Starting server on {server_cfg['host']}")
-                    server_ssh.exec_command(f"nohup {REMOTE_BIN} {protocol} server --port {port} > /dev/null 2>&1 &")
-                    time.sleep(2) # Wait for server bind
 
-                    # Start Client
-                    remote_json = "/tmp/results.json"
-                    # Construct client command
-                    cmd_parts = [
-                        REMOTE_BIN, protocol, "client",
-                        "--server", server_cfg['host'],
-                        "--port", str(port),
-                        "--padding", str(scenario_data['padding']),
-                        "--json", remote_json
-                    ]
-                    # Add optionals
-                    if 'test_duration' in scenario_data: cmd_parts += ["--test-duration", str(scen_data['test_duration'])]
-                    if 'reliable_freq' in scenario_data: cmd_parts += ["--reliable-freq", str(scen_data['reliable_freq'])]
-                    if 'unreliable_freq' in scenario_data: cmd_parts += ["--unreliable-freq", str(scen_data['unreliable_freq'])]
+        # --- PHASE 2: TEST EXECUTION ---
+        print("\n=== Phase 2: Running Tests ===")
 
-                    print(f"[*] Starting client on {client_cfg['host']}")
-                    stdin, stdout, stderr = client_ssh.exec_command(" ".join(cmd_parts))
+        for protocol in scen_data['protocols']:
+            print(f"\n>>> Starting Protocol Series: {protocol}")
+            local_proto_dir = results.prepare_directories(results_dir, protocol)
+            client_cfg = scen_data['client']
 
-                    if stdout.channel.recv_exit_status() != 0:
-                        print(f"[!] Client Error: {stderr.read().decode()}")
-                    else:
-                        # Collect Results
-                        local_file = os.path.join(local_proto_dir, f"{server_cfg['name']}_{emu['name']}.json")
-                        results.download_file(client_ssh, remote_json, local_file)
+            for server_cfg in scen_data['servers']:
+                srv_pass = passwords.get(f"{server_cfg.get('username', 'root')}@{server_cfg['host']}", "")
 
-                except Exception as e:
-                    print(f"[!] Exception during test: {e}")
+                for emu in server_cfg.get('emulations', [{'name': 'default'}]):
+                    print(f"\n--- Test: {server_cfg.get('name', 'Server')} | Mode: {emu['name']} ---")
 
-                finally:
-                    # Teardown
-                    if server_ssh:
-                        emulation.clean_emulation(server_ssh, interface, srv_pass)
-                        server_ssh.exec_command("pkill -f network_protocol_tester")
-                        server_ssh.close()
-                    if client_ssh:
-                        client_ssh.close()
+                    server_ssh = None
+                    client_ssh = None
+
+                    try:
+                        server_ssh = get_ssh_connection(server_cfg)
+                        client_ssh = get_ssh_connection(client_cfg)
+                        interface = emu.get('interface', 'eth0')
+
+                        # Apply Network Emulation (Skip on Cloud)
+                        if server_cfg.get('is_cloud'):
+                            print("[*] Cloud node detected: Skipping NetEm/TC configuration.")
+                        else:
+                            emulation.clean_emulation(server_ssh, interface, srv_pass)
+                            emulation.apply_emulation(server_ssh, interface, emu.get('latency'), emu.get('drop'), srv_pass)
+
+                        # Start Server
+                        port = 12345
+                        print(f"[*] Starting server on {server_cfg['host']}")
+                        server_ssh.exec_command(f"nohup {REMOTE_BIN} {protocol} server --port {port} > /dev/null 2>&1 &")
+                        time.sleep(2) # Give it a moment to bind
+
+                        # Start Client
+                        remote_json = "/tmp/results.json"
+                        cmd_parts = [
+                            REMOTE_BIN, protocol, "client",
+                            "--server", server_cfg['host'],
+                            "--port", str(port),
+                            "--padding", str(scen_data['padding']),
+                            "--json", remote_json
+                        ]
+                        # Optional arguments
+                        if 'test_duration' in scen_data: cmd_parts += ["--test-duration", str(scen_data['test_duration'])]
+                        if 'reliable_freq' in scen_data: cmd_parts += ["--reliable-freq", str(scen_data['reliable_freq'])]
+                        if 'unreliable_freq' in scen_data: cmd_parts += ["--unreliable-freq", str(scen_data['unreliable_freq'])]
+
+                        print(f"[*] Starting client on {client_cfg['host']}")
+                        stdin, stdout, stderr = client_ssh.exec_command(" ".join(cmd_parts))
+
+                        exit_code = stdout.channel.recv_exit_status()
+                        if exit_code != 0:
+                            print(f"[!] Client Error: {stderr.read().decode()}")
+                        else:
+                            # Download Results
+                            local_file = os.path.join(local_proto_dir, f"{server_cfg.get('name', 'server')}_{emu['name']}.json")
+                            results.download_file(client_ssh, remote_json, local_file)
+
+                    except Exception as e:
+                        print(f"[!] Exception during test: {e}")
+
+                    finally:
+                        # Cleanup Processes per test
+                        if server_ssh:
+                            if not server_cfg.get('is_cloud'):
+                                emulation.clean_emulation(server_ssh, interface, srv_pass)
+                            server_ssh.exec_command("pkill -f network_protocol_tester")
+                            server_ssh.close()
+                        if client_ssh:
+                            client_ssh.close()
+
+    except Exception as e:
+        print(f"[!] Critical Failure: {e}")
+
+    finally:
+        # --- PHASE 3: TEARDOWN ---
+        if provisioners:
+            print("\n=== Phase 3: Cloud Teardown ===")
+            for prov in provisioners:
+                prov.teardown()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Network Protocol Tester Executor")
