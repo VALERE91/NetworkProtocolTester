@@ -27,6 +27,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_ext: ""
 
+          # Linux ARM64
+          - os: ubuntu-latest
+            platform: linux
+            target: aarch64-unknown-linux-gnu
+            binary_ext: ""
+
           # Windows x64
           - os: windows-latest
             platform: windows

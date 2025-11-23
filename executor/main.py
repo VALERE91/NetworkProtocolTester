@@ -11,6 +11,8 @@ from . import results
 
 REMOTE_WORK_DIR = "/tmp/network_protocol_tester"
 REMOTE_BIN = f"{REMOTE_WORK_DIR}/target/release/network_protocol_tester"
+REPO_OWNER = "VALERE91"
+REPO_NAME = "NetworkProtocolTester"
 GIT_URL = "https://github.com/VALERE91/NetworkProtocolTester.git"
 
 def get_ssh_connection(host_info):
@@ -21,53 +23,90 @@ def get_ssh_connection(host_info):
     ssh.connect(host_info['host'], username=host_info.get('username', 'root'), key_filename=key_path)
     return ssh
 
-def prepare_host(host_info, sudo_password):
-    """Installs dependencies and builds the project on the remote host."""
+def resolve_binary_url(ssh, version):
+    """
+    Detects remote OS/Arch and returns the correct GitHub Release URL.
+    """
+    # Detect OS
+    stdin, stdout, stderr = ssh.exec_command("uname -s")
+    os_name = stdout.read().decode().strip().lower()
+
+    # Detect Arch
+    stdin, stdout, stderr = ssh.exec_command("uname -m")
+    arch = stdout.read().decode().strip().lower()
+
+    # Map to Artifact Name (Matches the GH Actions naming convention)
+    # Naming convention: network_protocol_tester-<platform>[-<arch>]
+    # Linux x86_64 -> network_protocol_tester-linux-x86_64
+    # MacOS ARM64  -> network_protocol_tester-macos-arm64
+
+    suffix = ""
+    if "linux" in os_name:
+        if arch == "x86_64":
+            suffix = "linux-x86_64"
+        else:
+            raise Exception(f"Unsupported Linux architecture: {arch}. Release only has x86_64.")
+    elif "darwin" in os_name: # macOS
+        if arch == "arm64":
+            suffix = "macos-arm64"
+        elif arch == "x86_64":
+            suffix = "macos-intel" # Assuming you named it this in GH Actions
+        else:
+            raise Exception(f"Unsupported macOS architecture: {arch}")
+    else:
+        raise Exception(f"Unsupported Remote OS: {os_name}")
+
+    binary_name = f"network_protocol_tester-{suffix}"
+
+    # Construct URL
+    url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/{version}/{binary_name}"
+    return url
+
+def prepare_host(host_info, sudo_password, version):
+    """
+    Prepares host by downloading the binary directly from GitHub.
+    """
     host = host_info['host']
-    print(f"[*] Preparing host: {host}")
-
-    # Define all commands in order
-    # Format: (command_string, human_readable_description)
-    setup_steps = [
-        # Sudo commands (Require Password)
-        ("sudo -S apt-get update", "Updating apt cache"),
-        ("sudo -S apt-get install -y git iproute2 build-essential curl", "Installing system dependencies"),
-
-        # User-space commands (No Password)
-        ("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y", "Installing Rust toolchain"),
-
-        # Git Logic (Check if exists -> Pull, Else -> Clone)
-        (f"if [ -d {REMOTE_WORK_DIR}/.git ]; then "
-         f"echo 'Updating...'; cd {REMOTE_WORK_DIR} && git pull; "
-         f"else "
-         f"echo 'Cloning...'; rm -rf {REMOTE_WORK_DIR}; git clone {GIT_URL} {REMOTE_WORK_DIR}; "
-         f"fi", "Syncing repository"),
-
-        # Build Project
-        (f"cd {REMOTE_WORK_DIR} && $HOME/.cargo/bin/cargo build --release", "Building project release")
-    ]
+    print(f"[*] Preparing host: {host} (Target: {version})")
 
     try:
         with get_ssh_connection(host_info) as ssh:
-            for cmd, desc in setup_steps:
-                print(f"[*] {host}: {desc}...")
+            # 1. Determine Download URL
+            download_url = resolve_binary_url(ssh, version)
+            print(f" -> Detected platform. Downloading from: {download_url}")
 
+            # 2. Install Runtime Dependencies (curl + iproute2 for tc)
+            # Check if apt-get exists (Linux) to install dependencies
+            stdin, stdout, stderr = ssh.exec_command("which apt-get")
+            if stdout.channel.recv_exit_status() == 0:
+                print(f" -> Installing dependencies on {host}...")
+                cmd = "sudo -S apt-get update && sudo -S apt-get install -y iproute2 curl"
                 stdin, stdout, stderr = ssh.exec_command(cmd)
+                stdin.write(sudo_password + '\n')
+                stdin.flush()
+                if stdout.channel.recv_exit_status() != 0:
+                    print(f"[!] Warning: Dep install failed: {stderr.read().decode()}")
 
-                # Only write password if the command actually needs it
-                if cmd.strip().startswith("sudo -S"):
-                    stdin.write(sudo_password + '\n')
-                    stdin.flush()
+            # 3. Setup Directory
+            ssh.exec_command(f"mkdir -p {REMOTE_WORK_DIR}")
 
-                exit_status = stdout.channel.recv_exit_status()
-                if exit_status != 0:
-                    error_log = stderr.read().decode().strip()
-                    raise Exception(f"Step '{desc}' failed: {error_log}")
+            # 4. Download Binary
+            # -L follows redirects, -o saves to specific path
+            download_cmd = f"curl -L -o {REMOTE_BIN} {download_url}"
+            stdin, stdout, stderr = ssh.exec_command(download_cmd)
+            if stdout.channel.recv_exit_status() != 0:
+                error = stderr.read().decode()
+                if "404" in error or "404" in stdout.read().decode():
+                    raise Exception(f"Release binary not found on GitHub. Check version {version} and URL.")
+                raise Exception(f"Download failed: {error}")
 
-            print(f"[*] Host {host} is fully prepared.")
+            # 5. Make Executable
+            ssh.exec_command(f"chmod +x {REMOTE_BIN}")
+            print(f"[*] Host {host} ready.")
 
     except Exception as e:
         print(f"[!] Failed to prepare host {host}: {e}")
+        raise e
 
 def execute_test_cycle(scenario_data, results_dir):
     """Main execution loop."""
@@ -75,13 +114,17 @@ def execute_test_cycle(scenario_data, results_dir):
     # Provision all hosts
     all_hosts = scenario_data['servers'] + [scenario_data['client']]
     passwords = {} # Cache passwords per user/host if needed, or ask once.
+    version = scen_data.get('release_version')
+
+    if not version:
+        raise ValueError("Scenario file is missing 'release_version' field (e.g. 'v1.0.1')")
 
     # Simple password strategy: Ask once per unique user/host combo
     for host in all_hosts:
         key = f"{host.get('username', 'root')}@{host['host']}"
         if key not in passwords:
             passwords[key] = getpass.getpass(f"Enter sudo password for {key}: ")
-        prepare_host(host, passwords[key])
+        prepare_host(host, passwords[key], version)
 
     client_cfg = scen_data['client']
 
