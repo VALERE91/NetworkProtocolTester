@@ -5,7 +5,7 @@ import uuid
 
 # Constants
 # We filter for the official Ubuntu 22.04 LTS image (Jammy Jellyfish)
-AMI_FILTER_NAME = "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"
+AMI_FILTER_NAME = "ubuntu/images/hvm-ssd/ubuntu-noble-24.04-amd64-server-*"
 AMI_OWNER_ID = "099720109477"  # Canonical (Ubuntu creator) ID
 SSH_PORT = 22
 TEST_PORT = 12345
@@ -72,8 +72,10 @@ class CloudProvisioner:
             IpPermissions=[
                 # SSH
                 {'IpProtocol': 'tcp', 'FromPort': SSH_PORT, 'ToPort': SSH_PORT, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]},
-                # Application Port
-                {'IpProtocol': 'tcp', 'FromPort': TEST_PORT, 'ToPort': TEST_PORT, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}
+                # Application Port (TCP)
+                {'IpProtocol': 'tcp', 'FromPort': TEST_PORT, 'ToPort': TEST_PORT, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]},
+                # Application Port (UDP)
+                {'IpProtocol': 'udp', 'FromPort': TEST_PORT, 'ToPort': TEST_PORT, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}
             ]
         )
         return sg_id

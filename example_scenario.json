@@ -1,5 +1,5 @@
 {
-    "release_version": "v1.0.5",
+    "release_version": "v1.0.6",
     "protocols": ["udp", "tcp", "quic", "enet"],
     "padding": 1024,
     "test_duration": 10,
@@ -11,18 +11,6 @@
         "private_key": "~/.ssh/id_rsa"
     },
     "servers": [
-        { 
-            "name": "local_vm",
-            "host": "10.211.55.11",
-            "username": "valere",
-            "private_key": "~/.ssh/id_rsa",
-            "emulations": [
-                {"name": "default"},
-                {"name": "good", "interface": "enp0s5", "latency": 50, "drop": 1},
-                {"name": "medium", "interface": "enp0s5", "latency": 100, "drop": 2},
-                {"name": "bad", "interface": "enp0s5", "latency": 200, "drop": 5}
-            ]
-        },
         {
             "name": "Aws-Paris",
             "type": "cloud",
